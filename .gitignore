@@ -1,2 +1,4 @@
 /.vs
 *.pdf
+.ugv_env
+__pycache__

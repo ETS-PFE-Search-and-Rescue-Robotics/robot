@@ -9,8 +9,8 @@ import math
 import yaml, os, json, subprocess
 from collections import deque
 import textwrap
-from vendor.pose_sense.detector import PoseDetector
 from vendor.pose_sense.classifier import ActivityClassifier
+from vendor.pose_sense.detector import PoseDetector
 
 # config file.
 curpath = os.path.realpath(__file__)
@@ -115,13 +115,13 @@ class OpencvFuncs():
 
         # mediapipe detect pose
         self.mp_pose = mp.solutions.pose
+        self.detector = PoseDetector(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.classifier = ActivityClassifier()
         self.pose = self.mp_pose.Pose(static_image_mode=False, 
                                     model_complexity=1, 
                                     smooth_landmarks=True, 
                                     min_detection_confidence=0.5, 
                                     min_tracking_confidence=0.5)
-        self.pose_detector = PoseDetector(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-        self.activity_classifier = ActivityClassifier()
 
         # base data
         self.show_base_info_flag = False
@@ -819,20 +819,27 @@ class OpencvFuncs():
 
     def mediaPipe_pose(self, img):
         image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(image)
-        pose_result = self.pose_detector.detect_pose(image)
-        overlay_buffer = np.zeros_like(image)
-        if pose_result:
-            angles = self.pose_detector.get_body_angles(pose_result)
-            classification = self.activity_classifier.classify_activity(pose_result, angles)
-            #annotated_image = self.pose_detector.draw_pose(image, pose_result)
-            cv2.putText(overlay_buffer, f"Activity: {classification['activity']}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.putText(overlay_buffer, f"Confidence: {classification['confidence']:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
-        cv2.putText(overlay_buffer, 'MediaPipe Pose', (100, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        if results.pose_landmarks:
-            self.mpDraw.draw_landmarks(overlay_buffer, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
-        self.overlay = overlay_buffer
+        #----- Detect pose
+        results = self.detector.detect_pose(image)
+        
+        if results:
+            # Get body angles
+            angles = self.detector.get_body_angles(results)
+            
+            # Classify activity
+            classification = self.classifier.classify_activity(results, angles)
+            
+            # Draw pose on image
+            annotated_image = self.detector.draw_pose(image, results)
+            
+            # Add classification text
+            cv2.putText(annotated_image, f"Activity: {classification['activity']}", 
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(annotated_image, f"Confidence: {classification['confidence']:.2f}", 
+                (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        self.overlay = image
 
 
 
