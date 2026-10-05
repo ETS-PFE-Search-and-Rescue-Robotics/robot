@@ -1,0 +1,44 @@
+name: CI
+
+# Lightweight regression gate for the project's own additions in ugv_server/
+# (the LIDAR SLAM / pose code). The surrounding Flask app is a vendored fork of
+# waveshareteam/ugv_jetson and is intentionally NOT linted here. Hardware deps
+# (serial, cameras) aren't available in CI, so we syntax-check everything and
+# run the pose estimator's self-contained harness as a crash-free smoke test.
+
+on:
+  push:
+  pull_request:
+
+env:
+  ORIG_MODULES: >-
+    ugv_server/lidar_pose.py
+    ugv_server/position_estimators.py
+    ugv_server/map_ctrl.py
+    ugv_server/WebSocketClient.py
+    ugv_server/scripts/test_lidar_pose.py
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: python -m pip install --upgrade pip numpy flake8
+
+      - name: Lint — real errors only (blocking, original modules)
+        run: flake8 --select=E9,F63,F7,F82 --show-source --statistics $ORIG_MODULES
+
+      - name: Lint — style (advisory, never fails the build)
+        run: flake8 --exit-zero --max-line-length=120 --statistics $ORIG_MODULES
+
+      - name: Byte-compile ugv_server (syntax check, no imports)
+        run: python -m compileall -q ugv_server
+
+      - name: Smoke test — LIDAR pose estimator harness runs end to end
+        run: python ugv_server/scripts/test_lidar_pose.py
