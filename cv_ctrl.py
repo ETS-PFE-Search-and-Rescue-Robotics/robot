@@ -11,6 +11,10 @@ from collections import deque
 import textwrap
 from vendor.pose_sense.detector import PoseDetector
 from vendor.pose_sense.classifier import ActivityClassifier
+from base_ctrl import BaseController
+import time
+import rclpy
+from sensor_msgs.msg import LaserScan
 
 # config file.
 curpath = os.path.realpath(__file__)
@@ -114,6 +118,7 @@ class OpencvFuncs():
         self.face_detection = self.mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
 
         # mediapipe detect pose
+        self.z = 0
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(static_image_mode=False, 
                                     model_complexity=1, 
@@ -122,6 +127,18 @@ class OpencvFuncs():
                                     min_tracking_confidence=0.5)
         self.pose_detector = PoseDetector(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         self.activity_classifier = ActivityClassifier()
+        self.base = BaseController('/dev/ttyTHS1', 115200)
+        self.is_moving = False
+        self.found_lying_human = False
+
+        #---- LiDAR stuff
+        self._lock = threading.Lock()
+        self._last_scan = None
+        rclpy.init()
+        self.node = rclpy.create_node('distance_fetcher')
+        self.node.create_subscription(LaserScan, '/scan', self._cb, 10)
+        t = threading.Thread(target=lambda: rclpy.spin(self.node), daemon=True)
+        t.start()
 
         # base data
         self.show_base_info_flag = False
@@ -150,6 +167,34 @@ class OpencvFuncs():
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, f['video']['default_res_w'])
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, f['video']['default_res_h'])
 
+
+    def _cb(self, msg):
+        with self._lock: self._last_scan = msg
+
+    def get_distance(self):
+        with self._lock: scan_msg = self._last_scan
+
+        if scan_msg is None:
+            return None
+    
+        #---- TODO ADJUST LIDAR ORIENTATION
+        #---- RIGHT NOW IT SEEMS TO DETECT STUFF ON ITS LEFT SIDE
+        
+        total_angle = scan_msg.angle_max - scan_msg.angle_min
+        index_per_rad = len(scan_msg.ranges) / total_angle
+        
+        # 0 radians = forward
+        #forward_idx = int(-scan_msg.angle_min * index_per_rad)
+        forward_idx = 405
+        
+        # Sample a small window around forward
+        start = max(0, forward_idx - 5)
+        end = min(len(scan_msg.ranges), forward_idx + 5)
+        
+        valid = [d for d in scan_msg.ranges[start:end] 
+                if math.isfinite(d) and d > 0.1]
+        
+        return min(valid) if valid else None
 
 
     def frame_process(self):
@@ -822,11 +867,31 @@ class OpencvFuncs():
         results = self.pose.process(image)
         pose_result = self.pose_detector.detect_pose(image)
         overlay_buffer = np.zeros_like(image)
+
         if pose_result:
             angles = self.pose_detector.get_body_angles(pose_result)
             classification = self.activity_classifier.classify_activity(pose_result, angles)
             #annotated_image = self.pose_detector.draw_pose(image, pose_result)
             cv2.putText(overlay_buffer, f"Activity: {classification['activity']}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            self.found_lying_human = classification['activity'] == "lying"
+
+        if self.found_lying_human:
+            #---- Get the Lidar distance from the lying human
+            distance = self.get_distance()
+
+            if distance is not None:
+                if distance > 0.4:
+                    self.is_moving = True
+                    #print(f"Human detected at {distance:.2f}m")
+                    speed = 0.2
+                    self.base.send_command({"T": 1,"L": speed,"R": speed})
+                elif self.is_moving:
+                    self.is_moving = False
+                    self.base.send_command({"T":1,"L":0,"R":0})
+            else:
+                print("No LiDAR reading - skipping")
+
             cv2.putText(overlay_buffer, f"Confidence: {classification['confidence']:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
         cv2.putText(overlay_buffer, 'MediaPipe Pose', (100, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
